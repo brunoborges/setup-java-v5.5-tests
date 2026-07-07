@@ -74,3 +74,50 @@ jobs:
             exit 1
           fi
           echo "OK: javac reported errors; the problem matcher annotated them"
+
+  disabled:
+    name: 'matcher disabled -> NO annotations - ${{ matrix.os }}'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Java (registers the javac problem matcher)
+        uses: actions/setup-java@6657b993409da921e0c021d82aa9c159601e7a27 # main (latest)
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Disable the javac problem matcher
+        shell: bash
+        run: |
+          echo "::remove-matcher owner=javac::"
+          echo "::remove-matcher owner=java::"
+
+      - name: Compile with -Xlint:all (warnings, but must NOT be annotated)
+        shell: bash
+        run: |
+          set -euo pipefail
+          javac -Xlint:all \
+            javac-matcher/warnings/Legacy.java \
+            javac-matcher/warnings/App.java
+          echo "Compiled with warnings; expecting zero annotations after remove-matcher."
+
+      - name: Compile code with errors (fails, but must NOT be annotated)
+        id: compile
+        continue-on-error: true
+        shell: bash
+        run: javac javac-matcher/errors/Broken.java
+
+      - name: Confirm compiler still ran and failed (only annotations are suppressed)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "compile outcome: ${{ steps.compile.outcome }}"
+          if [ "${{ steps.compile.outcome }}" != "failure" ]; then
+            echo "::error::expected javac to still fail on Broken.java"
+            exit 1
+          fi
+          echo "OK: javac still reports errors in the log; matcher no longer creates annotations"
