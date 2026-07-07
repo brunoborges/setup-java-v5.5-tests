@@ -1,0 +1,76 @@
+name: javac problem matcher (v5.4.0)
+
+# The action registers a javac problem matcher (##[add-matcher] java.json), which
+# turns lines like "File.java:12: warning|error: message" into GitHub annotations
+# shown in the run summary and inline on the affected files.
+#
+# This workflow deliberately compiles Java that produces warnings and errors so the
+# annotations can be inspected. Open a run and look at the "Annotations" panel, or the
+# yellow/red markers next to the compile step's log lines.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  warnings:
+    name: 'javac warnings are annotated - ${{ matrix.os }}'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Java (registers the javac problem matcher)
+        uses: actions/setup-java@6657b993409da921e0c021d82aa9c159601e7a27 # main (latest)
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Compile with -Xlint:all (emits warnings, still succeeds)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # javac exits 0 on warnings; the matcher annotates each "warning:" line.
+          javac -Xlint:all \
+            javac-matcher/warnings/Legacy.java \
+            javac-matcher/warnings/App.java
+          echo "Compilation succeeded with warnings (see annotations above)."
+
+  errors:
+    name: 'javac errors are annotated - ${{ matrix.os }}'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Java (registers the javac problem matcher)
+        uses: actions/setup-java@6657b993409da921e0c021d82aa9c159601e7a27 # main (latest)
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Compile code with errors (expected to fail; matcher annotates them)
+        id: compile
+        continue-on-error: true
+        shell: bash
+        run: javac javac-matcher/errors/Broken.java
+
+      - name: Confirm the compile failed (so the annotations are meaningful)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "compile outcome: ${{ steps.compile.outcome }}"
+          if [ "${{ steps.compile.outcome }}" != "failure" ]; then
+            echo "::error::expected javac to fail on Broken.java"
+            exit 1
+          fi
+          echo "OK: javac reported errors; the problem matcher annotated them"
