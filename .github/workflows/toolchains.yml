@@ -68,7 +68,7 @@ jobs:
             echo "::error::expected v5.4.0 to duplicate jdk-21 (>=2), got $dup21"
             exit 1
           fi
-          echo "OK (baseline): v5.4.0 duplicated jdk-21 ($dup21x) - this is the bug fixed by #534"
+          echo "OK (baseline): v5.4.0 duplicated jdk-21 (${dup21}x) - this is the bug fixed by #534"
 
   toolchains-growth:
     name: 'CURRENT: toolchains.xml stays consistent - ${{ matrix.os }}'
