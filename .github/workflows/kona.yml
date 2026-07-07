@@ -46,7 +46,7 @@ jobs:
     steps:
       - name: Set up Tencent Kona JDK
         id: setup-java
-        uses: actions/setup-java@6657b993409da921e0c021d82aa9c159601e7a27 # main (latest)
+        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # main (latest)
         with:
           distribution: kona
           java-version: ${{ matrix.version }}
