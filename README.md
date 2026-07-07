@@ -2,8 +2,8 @@
 
 CI test bed for changes merged into [`actions/setup-java`](https://github.com/actions/setup-java)
 **after the v5.4.0 release**. Every workflow pins the action to commit
-[`a50fdcc`](https://github.com/actions/setup-java/commit/a50fdccef19f861401a6f00b7caa2abf98504acb)
-(the tip of `main` at the time this repo was created) so the exact code under test is unambiguous.
+[`6657b99`](https://github.com/actions/setup-java/commit/6657b993409da921e0c021d82aa9c159601e7a27)
+(the tip of `main`) so the exact code under test is unambiguous.
 
 ## What changed since v5.4.0
 
@@ -14,6 +14,7 @@ CI test bed for changes merged into [`actions/setup-java`](https://github.com/ac
 | [#1053](https://github.com/actions/setup-java/pull/1053) | **`show-download-progress`** input → `-ntp` in `MAVEN_ARGS` | [`maven-args.yml`](.github/workflows/maven-args.yml) | ✅ asserts v5.4.0 sets no `-ntp` |
 | [#1052](https://github.com/actions/setup-java/pull/1052) | `settings.xml` now sets **`interactiveMode=false`** | [`settings-interactive-mode.yml`](.github/workflows/settings-interactive-mode.yml) | ✅ asserts v5.4.0 has no `interactiveMode` |
 | [#534](https://github.com/actions/setup-java/pull/534) | Fix: **Maven toolchains grows unexpectedly** on repeated runs | [`toolchains.yml`](.github/workflows/toolchains.yml) | ✅ asserts v5.4.0 duplicates a re-run id |
+| [#1017](https://github.com/actions/setup-java/pull/1017) | New **`set-default`** input (install a JDK without changing `JAVA_HOME`) | [`set-default.yml`](.github/workflows/set-default.yml) | ✅ asserts v5.4.0 ignores it (JDK becomes default) |
 
 Dependency bumps and internal CI/test-only commits from the same range are intentionally
 not covered here — they have no user-facing action behavior to exercise.
@@ -24,7 +25,7 @@ Each feature workflow (except `verify-signature`, where v5.4.0 simply ignores th
 input) contains **two sets of jobs** so you can compare behavior directly in the Actions UI:
 
 - `BASELINE v5.4.0: …` — pinned to [`1bcf9fb`](https://github.com/actions/setup-java/commit/1bcf9fb12cf4aa7d266a90ae39939e61372fe520) (v5.4.0) and asserts the **previous** behavior.
-- `CURRENT: …` — pinned to [`a50fdcc`](https://github.com/actions/setup-java/commit/a50fdccef19f861401a6f00b7caa2abf98504acb) and asserts the **new** behavior.
+- `CURRENT: …` — pinned to [`6657b99`](https://github.com/actions/setup-java/commit/6657b993409da921e0c021d82aa9c159601e7a27) and asserts the **new** behavior.
 
 Both are expected to pass: together they document exactly what changed.
 

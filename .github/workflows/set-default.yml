@@ -1,0 +1,133 @@
+name: set-default option (#1017)
+
+# Verifies the new `set-default` input (default: true).
+#   - set-default: false -> JDK is installed but JAVA_HOME/PATH are NOT changed;
+#     JAVA_HOME_<major>_<arch> and the step outputs are still set.
+#   - set-default: true (default) -> JAVA_HOME points at the newly installed JDK.
+# The v5.4.0 baseline has no such input, so `set-default: false` is ignored and
+# the JDK always becomes the default.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  set-default-false-current:
+    name: 'CURRENT: set-default=false keeps JAVA_HOME - ${{ matrix.os }}'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Capture the runner's initial JAVA_HOME
+        shell: bash
+        run: echo "INITIAL_JAVA_HOME=${JAVA_HOME:-}" >> "$GITHUB_ENV"
+
+      - name: Install JDK 21 without making it default
+        id: setup-java
+        uses: actions/setup-java@6657b993409da921e0c021d82aa9c159601e7a27 # main (latest)
+        with:
+          distribution: temurin
+          java-version: '21'
+          set-default: false
+
+      - name: Assert JAVA_HOME unchanged but JDK installed
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "INITIAL_JAVA_HOME=${INITIAL_JAVA_HOME:-}"
+          echo "JAVA_HOME=${JAVA_HOME:-}"
+          echo "outputs.path=${{ steps.setup-java.outputs.path }}"
+          echo "outputs.version=${{ steps.setup-java.outputs.version }}"
+
+          # 1) JAVA_HOME must be untouched.
+          if [ "${JAVA_HOME:-}" != "${INITIAL_JAVA_HOME:-}" ]; then
+            echo "::error::JAVA_HOME changed despite set-default=false ('${INITIAL_JAVA_HOME:-}' -> '${JAVA_HOME:-}')"
+            exit 1
+          fi
+          echo "OK: JAVA_HOME unchanged"
+
+          # 2) The action still installed the requested JDK and exposed it via outputs.path.
+          NEW_JDK='${{ steps.setup-java.outputs.path }}'
+          test -x "$NEW_JDK/bin/java" || { echo "::error::installed JDK not found at outputs.path"; exit 1; }
+          "$NEW_JDK/bin/java" -version 2>&1 | grep -E '"21|version "21' >/dev/null \
+            || { echo "::error::outputs.path JDK is not Java 21"; exit 1; }
+          echo "OK: Java 21 installed at outputs.path"
+
+          # 3) JAVA_HOME_<major>_<arch> must still be exported (arch varies by OS).
+          if ! env | grep -qE '^JAVA_HOME_21_[A-Za-z0-9]+='; then
+            echo "::error::JAVA_HOME_21_<arch> was not set"
+            env | grep '^JAVA_HOME_' || true
+            exit 1
+          fi
+          echo "OK: JAVA_HOME_21_<arch> is set"
+          env | grep '^JAVA_HOME_21_' || true
+
+  set-default-true-current:
+    name: 'CURRENT: set-default=true updates JAVA_HOME - ${{ matrix.os }}'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Install JDK 21 as default (explicit)
+        id: setup-java
+        uses: actions/setup-java@6657b993409da921e0c021d82aa9c159601e7a27 # main (latest)
+        with:
+          distribution: temurin
+          java-version: '21'
+          set-default: true
+      - name: Assert JAVA_HOME points at the new JDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "JAVA_HOME=${JAVA_HOME:-}"
+          echo "outputs.path=${{ steps.setup-java.outputs.path }}"
+          if [ "${JAVA_HOME:-}" != '${{ steps.setup-java.outputs.path }}' ]; then
+            echo "::error::JAVA_HOME does not match the installed JDK"
+            exit 1
+          fi
+          java -version 2>&1 | grep -E '"21|version "21' >/dev/null \
+            || { echo "::error::default java is not 21"; exit 1; }
+          echo "OK: JDK 21 is the default"
+
+  set-default-baseline:
+    name: 'BASELINE v5.4.0: set-default ignored (JDK becomes default) - ${{ matrix.os }}'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Capture the runner's initial JAVA_HOME
+        shell: bash
+        run: echo "INITIAL_JAVA_HOME=${JAVA_HOME:-}" >> "$GITHUB_ENV"
+
+      - name: Try set-default=false with published v5.4.0 (input did not exist yet)
+        id: setup-java
+        uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520 # v5.4.0 (published)
+        with:
+          distribution: temurin
+          java-version: '21'
+          set-default: false
+
+      - name: Assert v5.4.0 made the JDK default anyway (previous behavior)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "INITIAL_JAVA_HOME=${INITIAL_JAVA_HOME:-}"
+          echo "JAVA_HOME=${JAVA_HOME:-}"
+          echo "outputs.path=${{ steps.setup-java.outputs.path }}"
+          # In v5.4.0 the unknown input is ignored, so the JDK always becomes default.
+          if [ "${JAVA_HOME:-}" != '${{ steps.setup-java.outputs.path }}' ]; then
+            echo "::error::expected v5.4.0 to set JAVA_HOME to the new JDK"
+            exit 1
+          fi
+          echo "OK (baseline): v5.4.0 ignored set-default and made JDK 21 the default"
