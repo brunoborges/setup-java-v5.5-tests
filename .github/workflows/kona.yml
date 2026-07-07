@@ -12,8 +12,31 @@ permissions:
   contents: read
 
 jobs:
+  kona-baseline-unsupported:
+    name: 'BASELINE v5.4.0: kona is NOT supported - ubuntu-latest'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Try Tencent Kona with published v5.4.0 (expected to fail)
+        id: setup-java
+        continue-on-error: true
+        uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520 # v5.4.0 (published)
+        with:
+          distribution: kona
+          java-version: '21'
+
+      - name: Assert v5.4.0 rejected the kona distribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "setup-java outcome: ${{ steps.setup-java.outcome }}"
+          if [ "${{ steps.setup-java.outcome }}" != "failure" ]; then
+            echo "::error::expected v5.4.0 to fail on distribution 'kona', but it did not"
+            exit 1
+          fi
+          echo "OK (baseline): v5.4.0 does not support 'kona', as expected"
+
   kona:
-    name: kona ${{ matrix.version }} - ${{ matrix.os }}
+    name: 'CURRENT: kona ${{ matrix.version }} - ${{ matrix.os }}'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

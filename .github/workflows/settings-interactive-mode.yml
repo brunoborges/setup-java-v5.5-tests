@@ -13,8 +13,36 @@ permissions:
   contents: read
 
 jobs:
+  interactive-mode-baseline:
+    name: 'BASELINE v5.4.0: settings.xml has NO interactiveMode - ${{ matrix.os }}'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Set up Java with published v5.4.0 (generates settings.xml)
+        uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520 # v5.4.0 (published)
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Assert interactiveMode is absent in settings.xml (previous behavior)
+        shell: bash
+        run: |
+          set -euo pipefail
+          SETTINGS="$HOME/.m2/settings.xml"
+          echo "Reading $SETTINGS"
+          test -f "$SETTINGS" || { echo "::error::settings.xml not found"; exit 1; }
+          cat "$SETTINGS"
+          if tr -d '[:space:]' < "$SETTINGS" | grep -q "<interactiveMode>"; then
+            echo "::error::v5.4.0 unexpectedly wrote an interactiveMode element"
+            exit 1
+          fi
+          echo "OK (baseline): no interactiveMode element, as expected for v5.4.0"
+
   interactive-mode:
-    name: settings.xml has interactiveMode=false - ${{ matrix.os }}
+    name: 'CURRENT: settings.xml has interactiveMode=false - ${{ matrix.os }}'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

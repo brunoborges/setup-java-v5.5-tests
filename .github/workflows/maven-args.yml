@@ -15,6 +15,28 @@ permissions:
   contents: read
 
 jobs:
+  baseline-no-maven-args:
+    name: 'BASELINE v5.4.0: MAVEN_ARGS has no -ntp (${{ matrix.os }})'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520 # v5.4.0 (published)
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Assert MAVEN_ARGS does NOT contain -ntp (previous behavior)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "MAVEN_ARGS='${MAVEN_ARGS:-}'"
+          case " ${MAVEN_ARGS:-} " in
+            *" -ntp "*) echo "::error::v5.4.0 unexpectedly set -ntp"; exit 1 ;;
+            *) echo "OK (baseline): no -ntp, as expected for v5.4.0" ;;
+          esac
+
   default-suppresses-progress:
     name: default -> MAVEN_ARGS has -ntp (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

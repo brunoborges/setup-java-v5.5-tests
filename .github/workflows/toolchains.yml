@@ -15,8 +15,63 @@ permissions:
   contents: read
 
 jobs:
+  toolchains-growth-baseline:
+    name: 'BASELINE v5.4.0: toolchains.xml duplicates on re-run - ${{ matrix.os }}'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Set up JDK 21 (toolchain id jdk-21)
+        uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520 # v5.4.0 (published)
+        with:
+          distribution: temurin
+          java-version: '21'
+          mvn-toolchain-id: jdk-21
+
+      - name: Set up JDK 17 (toolchain id jdk-17)
+        uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520 # v5.4.0 (published)
+        with:
+          distribution: temurin
+          java-version: '17'
+          mvn-toolchain-id: jdk-17
+
+      - name: Set up JDK 11 (toolchain id jdk-11)
+        uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520 # v5.4.0 (published)
+        with:
+          distribution: temurin
+          java-version: '11'
+          mvn-toolchain-id: jdk-11
+
+      - name: Re-run JDK 21 (same id jdk-21 - v5.4.0 duplicates it)
+        uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520 # v5.4.0 (published)
+        with:
+          distribution: temurin
+          java-version: '21'
+          mvn-toolchain-id: jdk-21
+
+      - name: Show and assert the previous (buggy) behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          TC="$HOME/.m2/toolchains.xml"
+          test -f "$TC" || { echo "::error::toolchains.xml not found"; exit 1; }
+          cat "$TC"
+          echo "----"
+          total=$(grep -o "<toolchain>" "$TC" | wc -l | tr -d '[:space:]')
+          dup21=$(grep -o "<id>jdk-21</id>" "$TC" | wc -l | tr -d '[:space:]')
+          echo "<toolchain> entries: $total"
+          echo "jdk-21 occurrences:  $dup21"
+          # v5.4.0 has no de-duplication, so the re-run of jdk-21 leaves it duplicated.
+          if [ "$dup21" -lt 2 ]; then
+            echo "::error::expected v5.4.0 to duplicate jdk-21 (>=2), got $dup21"
+            exit 1
+          fi
+          echo "OK (baseline): v5.4.0 duplicated jdk-21 ($dup21x) - this is the bug fixed by #534"
+
   toolchains-growth:
-    name: toolchains.xml stays consistent - ${{ matrix.os }}
+    name: 'CURRENT: toolchains.xml stays consistent - ${{ matrix.os }}'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
