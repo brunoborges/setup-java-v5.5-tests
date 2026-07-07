@@ -31,7 +31,7 @@ jobs:
 
       - name: Install JDK 21 without making it default
         id: setup-java
-        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # main (latest)
+        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
         with:
           distribution: temurin
           java-version: '21'
@@ -79,7 +79,7 @@ jobs:
     steps:
       - name: Install JDK 21 as default (explicit)
         id: setup-java
-        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # main (latest)
+        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
         with:
           distribution: temurin
           java-version: '21'
