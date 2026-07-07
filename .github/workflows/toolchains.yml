@@ -1,0 +1,100 @@
+name: Maven toolchains no unexpected growth (#534)
+
+# Regression test for #534: invoking setup-java multiple times appended
+# malformed / duplicated entries to ~/.m2/toolchains.xml. Each invocation with a
+# distinct mvn-toolchain-id must add exactly one <toolchain> entry, keep a single
+# <toolchains> root, and remain valid XML.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  toolchains-growth:
+    name: toolchains.xml stays consistent - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Set up JDK 21 (toolchain id jdk-21)
+        uses: actions/setup-java@a50fdccef19f861401a6f00b7caa2abf98504acb # main after v5.4.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          mvn-toolchain-id: jdk-21
+
+      - name: Set up JDK 17 (toolchain id jdk-17)
+        uses: actions/setup-java@a50fdccef19f861401a6f00b7caa2abf98504acb # main after v5.4.0
+        with:
+          distribution: temurin
+          java-version: '17'
+          mvn-toolchain-id: jdk-17
+
+      - name: Set up JDK 11 (toolchain id jdk-11)
+        uses: actions/setup-java@a50fdccef19f861401a6f00b7caa2abf98504acb # main after v5.4.0
+        with:
+          distribution: temurin
+          java-version: '11'
+          mvn-toolchain-id: jdk-11
+
+      - name: Re-run JDK 21 (same id jdk-21 must not duplicate)
+        uses: actions/setup-java@a50fdccef19f861401a6f00b7caa2abf98504acb # main after v5.4.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          mvn-toolchain-id: jdk-21
+
+      - name: Inspect and validate toolchains.xml
+        shell: bash
+        run: |
+          set -euo pipefail
+          TC="$HOME/.m2/toolchains.xml"
+          echo "Reading $TC"
+          test -f "$TC" || { echo "::error::toolchains.xml not found"; exit 1; }
+          cat "$TC"
+          echo "----"
+
+          count_tag() { grep -o "$1" "$TC" | wc -l | tr -d '[:space:]'; }
+
+          OPEN_ROOT=$(count_tag "<toolchains")
+          TOOLCHAINS=$(count_tag "<toolchain>")
+
+          echo "root <toolchains> occurrences: $OPEN_ROOT"
+          echo "<toolchain> entries:           $TOOLCHAINS"
+
+          # Exactly one root element.
+          if [ "$OPEN_ROOT" -ne 1 ]; then
+            echo "::error::expected exactly 1 <toolchains> root, got $OPEN_ROOT"
+            exit 1
+          fi
+
+          # 3 distinct ids were used (jdk-21 twice must collapse) -> expect 3 entries.
+          if [ "$TOOLCHAINS" -ne 3 ]; then
+            echo "::error::expected 3 <toolchain> entries, got $TOOLCHAINS (unexpected growth/duplication)"
+            exit 1
+          fi
+
+          # Each id appears exactly once.
+          for id in jdk-21 jdk-17 jdk-11; do
+            n=$(grep -o "<id>$id</id>" "$TC" | wc -l | tr -d '[:space:]')
+            echo "id $id count: $n"
+            if [ "$n" -ne 1 ]; then
+              echo "::error::id $id appears $n times, expected 1"
+              exit 1
+            fi
+          done
+
+          # Well-formedness check when xmllint is available.
+          if command -v xmllint >/dev/null 2>&1; then
+            xmllint --noout "$TC"
+            echo "xmllint: well-formed"
+          fi
+
+          echo "OK: toolchains.xml is consistent"

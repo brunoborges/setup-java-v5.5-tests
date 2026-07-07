@@ -1,0 +1,48 @@
+name: Tencent Kona JDK (#672)
+
+# Verifies the new `kona` distribution added after v5.4.0.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kona:
+    name: kona ${{ matrix.version }} - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        version: ['21', '17', '11', '8']
+    steps:
+      - name: Set up Tencent Kona JDK
+        id: setup-java
+        uses: actions/setup-java@a50fdccef19f861401a6f00b7caa2abf98504acb # main after v5.4.0
+        with:
+          distribution: kona
+          java-version: ${{ matrix.version }}
+
+      - name: Print resolved version
+        run: |
+          echo "distribution: ${{ steps.setup-java.outputs.distribution }}"
+          echo "version:      ${{ steps.setup-java.outputs.version }}"
+          echo "path:         ${{ steps.setup-java.outputs.path }}"
+
+      - name: Verify java is Kona and on PATH
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version 2>&1 | tee version.txt
+          # Kona builds report the vendor/version string containing "Kona"
+          if ! grep -qi "kona" version.txt; then
+            echo "::error::java -version output does not mention Kona"
+            exit 1
+          fi
+          echo "JAVA_HOME=${JAVA_HOME}"
+          test -x "${JAVA_HOME}/bin/java"

@@ -1,0 +1,45 @@
+name: settings.xml interactiveMode=false (#1052)
+
+# The action generates ~/.m2/settings.xml. After v5.4.0 it now emits
+# <interactiveMode>false</interactiveMode> so Maven never blocks on prompts in CI.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  interactive-mode:
+    name: settings.xml has interactiveMode=false - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Set up Java (generates settings.xml)
+        uses: actions/setup-java@a50fdccef19f861401a6f00b7caa2abf98504acb # main after v5.4.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          # server-id defaults to "github", so settings.xml is generated.
+
+      - name: Assert interactiveMode=false in settings.xml
+        shell: bash
+        run: |
+          set -euo pipefail
+          SETTINGS="$HOME/.m2/settings.xml"
+          echo "Reading $SETTINGS"
+          test -f "$SETTINGS" || { echo "::error::settings.xml not found"; exit 1; }
+          cat "$SETTINGS"
+          # Normalize whitespace and look for the element.
+          if tr -d '[:space:]' < "$SETTINGS" | grep -q "<interactiveMode>false</interactiveMode>"; then
+            echo "OK: interactiveMode=false present"
+          else
+            echo "::error::interactiveMode=false not found in settings.xml"
+            exit 1
+          fi

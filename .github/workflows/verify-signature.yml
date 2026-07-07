@@ -1,0 +1,63 @@
+name: Verify signature (#1060)
+
+# Exercises `verify-signature: true` for the distributions that support it
+# (Temurin and Microsoft). The action downloads the GPG signature and verifies
+# the JDK archive against the bundled public key before installing.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  temurin-signature:
+    name: temurin ${{ matrix.version }} signed - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        version: ['21', '17']
+    steps:
+      - name: Set up Temurin with signature verification
+        id: setup-java
+        uses: actions/setup-java@a50fdccef19f861401a6f00b7caa2abf98504acb # main after v5.4.0
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.version }}
+          verify-signature: true
+
+      - name: Verify java
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          test -x "${JAVA_HOME}/bin/java"
+
+  microsoft-signature:
+    name: microsoft ${{ matrix.version }} signed - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        version: ['21', '17']
+    steps:
+      - name: Set up Microsoft OpenJDK with signature verification
+        id: setup-java
+        uses: actions/setup-java@a50fdccef19f861401a6f00b7caa2abf98504acb # main after v5.4.0
+        with:
+          distribution: microsoft
+          java-version: ${{ matrix.version }}
+          verify-signature: true
+
+      - name: Verify java
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          test -x "${JAVA_HOME}/bin/java"
