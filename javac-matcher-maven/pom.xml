@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.example</groupId>
+  <artifactId>javac-matcher-maven</artifactId>
+  <version>1.0.0</version>
+  <packaging>jar</packaging>
+
+  <!--
+    Exercises the javac problem matcher registered by setup-java when the build
+    is driven by Maven. The maven-compiler-plugin reformats javac diagnostics to
+    "[WARNING] /path/File.java:[line,col] message", which the matcher regex
+    ^([^:]+):(\d+): (warning|error): (.+?)$ does NOT match, so Maven builds are
+    NOT annotated. See .github/workflows/javac-matcher-build-tools.yml.
+
+    Default build compiles the warning sources (src/main/java) and succeeds.
+    Activate -Perrors to compile the failing sources (src/errors/java) instead.
+  -->
+
+  <properties>
+    <maven.compiler.release>21</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <matcher.sourceDirectory>${project.basedir}/src/main/java</matcher.sourceDirectory>
+  </properties>
+
+  <build>
+    <sourceDirectory>${matcher.sourceDirectory}</sourceDirectory>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+        <configuration>
+          <showWarnings>true</showWarnings>
+          <compilerArgs>
+            <arg>-Xlint:all</arg>
+          </compilerArgs>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+
+  <profiles>
+    <profile>
+      <id>errors</id>
+      <properties>
+        <matcher.sourceDirectory>${project.basedir}/src/errors/java</matcher.sourceDirectory>
+      </properties>
+    </profile>
+  </profiles>
+</project>

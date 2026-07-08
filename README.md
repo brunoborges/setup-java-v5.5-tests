@@ -35,7 +35,28 @@ Both are expected to pass: together they document exactly what changed.
 - `.github/workflows/` — one workflow per feature, each running on Ubuntu, Windows and macOS.
 - `maven-sample-project/` — a tiny Maven project with one external dependency, used by
   `maven-args.yml` to prove that transfer-progress logs are suppressed by default.
+- `javac-matcher/` — standalone `.java` sources (warnings + errors) compiled directly with
+  `javac` by `javac-problem-matcher.yml`.
+- `javac-matcher-maven/` / `javac-matcher-gradle/` — the same warning/error sources built
+  through Maven and Gradle, used by `javac-matcher-build-tools.yml` (below).
+
+## javac problem matcher vs build tools
+
+The `javac` problem matcher registered by setup-java only understands javac's **native**
+diagnostic format (`File.java:12: warning|error: message`). Whether your build gets
+annotated therefore depends on the build tool:
+
+| Build tool | Compiler output | Matched by `javac` matcher? |
+|------------|-----------------|-----------------------------|
+| Direct `javac` | `File.java:12: warning: …` | ✅ annotated |
+| **Gradle** | `File.java:12: warning: …` (passed through) | ✅ annotated |
+| **Maven** (compiler plugin) | `[WARNING] /path/File.java:[12,5] …` | ❌ not annotated |
+
+[`javac-matcher-build-tools.yml`](.github/workflows/javac-matcher-build-tools.yml) proves
+this by capturing each build log and asserting the number of matcher-format lines (0 for
+Maven, >0 for Gradle) — so it fails loudly if the behavior ever changes.
 
 ## Running
+
 
 Push to `main`, open a PR, or trigger any workflow manually via **workflow_dispatch**.
