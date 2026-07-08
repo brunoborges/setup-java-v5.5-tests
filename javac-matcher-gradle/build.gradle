@@ -1,0 +1,33 @@
+plugins {
+    id 'java'
+}
+
+// Exercises the javac problem matcher registered by setup-java when the build is
+// driven by Gradle. Gradle passes javac diagnostics through in their native form
+// "/path/File.java:line: warning|error: message", which the matcher regex
+// ^([^:]+):(\d+): (warning|error): (.+?)$ DOES match, so Gradle builds ARE
+// annotated. See .github/workflows/javac-matcher-build-tools.yml.
+//
+//   ./gradlew compileJava        -> compiles the warning sources (succeeds, warns)
+//   ./gradlew compileErrorsJava  -> compiles the failing sources (fails)
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+sourceSets {
+    // Failing sources live in their own source set so they can be compiled in a
+    // dedicated step without breaking the (successful) warning compilation.
+    errors {
+        java {
+            srcDir 'src/errors/java'
+        }
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.compilerArgs += ['-Xlint:all']
+    options.deprecation = true
+}

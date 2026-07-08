@@ -1,0 +1,155 @@
+name: javac problem matcher with Maven & Gradle
+
+# The javac problem matcher registered by setup-java (##[add-matcher] java.json)
+# only understands javac's *native* diagnostic format:
+#
+#     File.java:12: warning|error: message
+#
+# (matcher regex, owner=javac: ^([^:]+):(\d+): (warning|error): (.+?)$)
+#
+# This workflow demonstrates how the two major build tools interact with it:
+#
+#   * Gradle passes javac diagnostics through unchanged, so they DO match the
+#     matcher and show up as GitHub annotations.
+#   * The Maven compiler plugin reformats diagnostics to
+#         [WARNING] /path/File.java:[line,col] message
+#     which does NOT match the matcher, so Maven builds are NOT annotated even
+#     though the compiler reports the same warnings/errors.
+#
+# Each job captures the build log and asserts the number of matcher-format lines,
+# so the workflow is self-verifying (not just visual). Open a run and compare the
+# Gradle job's Annotations panel (populated) with the Maven job's (empty).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Exact javac matcher regex from actions/setup-java .github/java.json, as a
+  # POSIX ERE for grep. [^:]+ = file (no colon), then :line:, then severity.
+  MATCHER_RE: '^[^:]+:[0-9]+: (warning|error): .+$'
+
+jobs:
+  gradle-is-annotated:
+    name: 'Gradle build IS annotated - ${{ matrix.os }}'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Java (registers the javac problem matcher)
+        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Gradle compile with warnings (matcher should annotate them)
+        working-directory: javac-matcher-gradle
+        shell: bash
+        run: |
+          set -euo pipefail
+          # compileJava emits warnings but succeeds; tee so the matcher sees the log too.
+          ./gradlew --no-daemon --console=plain clean compileJava 2>&1 | tee warn.log
+          hits=$(grep -Ec "$MATCHER_RE" warn.log || true)
+          echo "matcher-format lines: $hits"
+          if [ "$hits" -lt 1 ]; then
+            echo "::error::expected Gradle warnings in native javac format (matcher would annotate)"
+            exit 1
+          fi
+          echo "OK: $hits Gradle warning line(s) match the javac matcher -> annotated"
+
+      - name: Gradle compile with errors (matcher should annotate them)
+        id: compile
+        continue-on-error: true
+        working-directory: javac-matcher-gradle
+        shell: bash
+        run: ./gradlew --no-daemon --console=plain compileErrorsJava 2>&1 | tee err.log
+
+      - name: Confirm Gradle errors failed the build and match the matcher
+        working-directory: javac-matcher-gradle
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "compile outcome: ${{ steps.compile.outcome }}"
+          if [ "${{ steps.compile.outcome }}" != "failure" ]; then
+            echo "::error::expected Gradle compileErrorsJava to fail"
+            exit 1
+          fi
+          hits=$(grep -Ec "$MATCHER_RE" err.log || true)
+          echo "matcher-format lines: $hits"
+          if [ "$hits" -lt 1 ]; then
+            echo "::error::expected Gradle errors in native javac format (matcher would annotate)"
+            exit 1
+          fi
+          echo "OK: $hits Gradle error line(s) match the javac matcher -> annotated"
+
+  maven-is-not-annotated:
+    name: 'Maven build is NOT annotated - ${{ matrix.os }}'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Java (registers the javac problem matcher)
+        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Maven compile with warnings (matcher must NOT annotate them)
+        working-directory: javac-matcher-maven
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B clean compile 2>&1 | tee warn.log
+          matcher=$(grep -Ec "$MATCHER_RE" warn.log || true)
+          diags=$(grep -Ec '\.java:\[[0-9]+,[0-9]+\]' warn.log || true)
+          echo "matcher-format lines: $matcher (expect 0), maven [line,col] diagnostics: $diags (expect >0)"
+          if [ "$diags" -lt 1 ]; then
+            echo "::error::expected the Maven compiler to report warnings ([WARNING] File.java:[l,c] ...)"
+            exit 1
+          fi
+          if [ "$matcher" -ne 0 ]; then
+            echo "::error::Maven output unexpectedly matched the javac matcher"
+            exit 1
+          fi
+          echo "OK: Maven reported $diags warning(s), but 0 lines match the matcher -> not annotated"
+
+      - name: Maven compile with errors (fails; matcher must NOT annotate them)
+        id: compile
+        continue-on-error: true
+        working-directory: javac-matcher-maven
+        shell: bash
+        run: mvn -B -Perrors clean compile 2>&1 | tee err.log
+
+      - name: Confirm Maven errors failed the build but were not matcher-annotated
+        working-directory: javac-matcher-maven
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "compile outcome: ${{ steps.compile.outcome }}"
+          if [ "${{ steps.compile.outcome }}" != "failure" ]; then
+            echo "::error::expected Maven -Perrors compile to fail"
+            exit 1
+          fi
+          matcher=$(grep -Ec "$MATCHER_RE" err.log || true)
+          diags=$(grep -Ec '\.java:\[[0-9]+,[0-9]+\]' err.log || true)
+          echo "matcher-format lines: $matcher (expect 0), maven [line,col] diagnostics: $diags (expect >0)"
+          if [ "$diags" -lt 1 ]; then
+            echo "::error::expected the Maven compiler to report errors ([ERROR] File.java:[l,c] ...)"
+            exit 1
+          fi
+          if [ "$matcher" -ne 0 ]; then
+            echo "::error::Maven error output unexpectedly matched the javac matcher"
+            exit 1
+          fi
+          echo "OK: Maven reported $diags error(s) in the log, but 0 lines match the matcher -> not annotated"
