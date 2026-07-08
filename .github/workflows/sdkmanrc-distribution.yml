@@ -33,7 +33,7 @@ jobs:
 
       - name: Install JDK from .sdkmanrc without a distribution input
         id: setup-java
-        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # main (latest)
+        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
         with:
           java-version-file: .sdkmanrc
 
