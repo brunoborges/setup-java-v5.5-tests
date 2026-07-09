@@ -20,7 +20,7 @@ permissions:
   contents: read
 
 env:
-  ACTION_SHA: 7155e1ca9012679a3b7683ccaccf65c502fc22f3
+  ACTION_SHA: 94eba1b8f50ec5a88d1c5cabc40af82a98e799ff
 
 jobs:
   latest-alias:
@@ -54,7 +54,7 @@ jobs:
 
       - name: Install latest
         id: latest
-        uses: actions/setup-java@7155e1ca9012679a3b7683ccaccf65c502fc22f3
+        uses: actions/setup-java@94eba1b8f50ec5a88d1c5cabc40af82a98e799ff
         with:
           distribution: ${{ matrix.distribution }}
           java-version: latest
@@ -77,7 +77,7 @@ jobs:
 
       - name: Install explicit newest major (with check-latest)
         id: major
-        uses: actions/setup-java@7155e1ca9012679a3b7683ccaccf65c502fc22f3
+        uses: actions/setup-java@94eba1b8f50ec5a88d1c5cabc40af82a98e799ff
         with:
           distribution: ${{ matrix.distribution }}
           java-version: ${{ steps.cap_latest.outputs.major }}
@@ -109,7 +109,7 @@ jobs:
       - name: Try next major (must not exist as GA)
         id: nextmajor
         continue-on-error: true
-        uses: actions/setup-java@7155e1ca9012679a3b7683ccaccf65c502fc22f3
+        uses: actions/setup-java@94eba1b8f50ec5a88d1c5cabc40af82a98e799ff
         with:
           distribution: ${{ matrix.distribution }}
           java-version: ${{ steps.cap_latest.outputs.next }}
