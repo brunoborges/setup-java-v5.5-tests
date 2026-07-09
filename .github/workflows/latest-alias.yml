@@ -1,0 +1,139 @@
+name: Verify `latest` alias (#832)
+
+# Verifies the new `java-version: latest` alias resolves to the newest PATCH of the
+# newest GA MAJOR each distribution offers.
+#
+# For every distribution it:
+#   1. installs `latest` and reads the true installed version from $JAVA_HOME/release
+#   2. installs the explicit major (with check-latest) and asserts it matches ->
+#      proves `latest` picked the newest patch, not just the newest major
+#   3. installs major+1 (continue-on-error) and asserts it FAILS ->
+#      proves there is no newer GA major, i.e. `latest` really is the latest
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/latest-alias.yml']
+
+permissions:
+  contents: read
+
+env:
+  ACTION_SHA: 7155e1ca9012679a3b7683ccaccf65c502fc22f3
+
+jobs:
+  latest-alias:
+    name: 'latest: ${{ matrix.distribution }}'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        distribution:
+          - temurin
+          - zulu
+          - corretto
+          - microsoft
+          - liberica
+          - semeru
+          - oracle
+          - dragonwell
+          - sapmachine
+          - graalvm
+          - graalvm-community
+          - jetbrains
+          - kona
+    steps:
+      - name: Reference newest GA major (Adoptium)
+        shell: bash
+        run: |
+          set -euo pipefail
+          adoptium=$(curl -fsSL https://api.adoptium.net/v3/info/available_releases | jq -r .most_recent_feature_release)
+          echo "Adoptium most_recent_feature_release: $adoptium"
+          echo "ADOPTIUM_LATEST=$adoptium" >> "$GITHUB_ENV"
+
+      - name: Install latest
+        id: latest
+        uses: actions/setup-java@7155e1ca9012679a3b7683ccaccf65c502fc22f3
+        with:
+          distribution: ${{ matrix.distribution }}
+          java-version: latest
+          token: ${{ github.token }}
+
+      - name: Capture latest install
+        id: cap_latest
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "action-reported version: ${{ steps.latest.outputs.version }}"
+          java -version
+          full=$(grep '^JAVA_VERSION=' "$JAVA_HOME/release" | cut -d'"' -f2)
+          echo "installed JAVA_VERSION: $full"
+          # major: strip legacy 1. prefix (1.8 -> 8), take first component
+          major=$(echo "$full" | sed -E 's/^1\.//' | cut -d. -f1)
+          echo "v_latest=$full" >> "$GITHUB_OUTPUT"
+          echo "major=$major" >> "$GITHUB_OUTPUT"
+          echo "next=$((major + 1))" >> "$GITHUB_OUTPUT"
+
+      - name: Install explicit newest major (with check-latest)
+        id: major
+        uses: actions/setup-java@7155e1ca9012679a3b7683ccaccf65c502fc22f3
+        with:
+          distribution: ${{ matrix.distribution }}
+          java-version: ${{ steps.cap_latest.outputs.major }}
+          check-latest: true
+          token: ${{ github.token }}
+
+      - name: Capture major install
+        id: cap_major
+        shell: bash
+        run: |
+          set -euo pipefail
+          full=$(grep '^JAVA_VERSION=' "$JAVA_HOME/release" | cut -d'"' -f2)
+          echo "explicit major ${{ steps.cap_latest.outputs.major }} -> $full"
+          echo "v_major=$full" >> "$GITHUB_OUTPUT"
+
+      - name: Assert latest == newest patch of newest major
+        shell: bash
+        run: |
+          set -euo pipefail
+          vl='${{ steps.cap_latest.outputs.v_latest }}'
+          vm='${{ steps.cap_major.outputs.v_major }}'
+          echo "latest -> $vl ; explicit major ${{ steps.cap_latest.outputs.major }} -> $vm"
+          if [ "$vl" != "$vm" ]; then
+            echo "::error::latest ($vl) is not the newest patch of major ${{ steps.cap_latest.outputs.major }} ($vm) for ${{ matrix.distribution }}"
+            exit 1
+          fi
+          echo "OK: latest resolves to newest patch $vl"
+
+      - name: Try next major (must not exist as GA)
+        id: nextmajor
+        continue-on-error: true
+        uses: actions/setup-java@7155e1ca9012679a3b7683ccaccf65c502fc22f3
+        with:
+          distribution: ${{ matrix.distribution }}
+          java-version: ${{ steps.cap_latest.outputs.next }}
+          token: ${{ github.token }}
+
+      - name: Assert next major is unavailable
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "next major (${{ steps.cap_latest.outputs.next }}) outcome: ${{ steps.nextmajor.outcome }}"
+          if [ "${{ steps.nextmajor.outcome }}" != "failure" ]; then
+            echo "::error::A newer GA major (${{ steps.cap_latest.outputs.next }}) exists for ${{ matrix.distribution }} but 'latest' resolved to major ${{ steps.cap_latest.outputs.major }}"
+            exit 1
+          fi
+          echo "OK: no newer GA major than ${{ steps.cap_latest.outputs.major }}"
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### ${{ matrix.distribution }}"
+            echo "- Adoptium newest GA major: ${ADOPTIUM_LATEST:-?}"
+            echo "- \`latest\` -> ${{ steps.cap_latest.outputs.v_latest }} (action reported: ${{ steps.latest.outputs.version }})"
+            echo "- explicit major ${{ steps.cap_latest.outputs.major }} -> ${{ steps.cap_major.outputs.v_major }}"
+            echo "- next major ${{ steps.cap_latest.outputs.next }} outcome: ${{ steps.nextmajor.outcome }} (expected: failure)"
+          } >> "$GITHUB_STEP_SUMMARY"
