@@ -50,7 +50,7 @@ jobs:
       - name: 'probe: shade plugin deps in ~/.m2 BEFORE compile'
         shell: bash
         run: |
-          .github/scripts/probe-m2.sh "seed / before compile"
+          .github/scripts/probe-m2.sh "seed / before compile" || true
       - name: 'mvn compile'
         working-directory: maven-plugin-cache-project
         shell: bash
@@ -59,7 +59,7 @@ jobs:
         shell: bash
         run: |
           echo "cache-hit=${{ steps.java.outputs.cache-hit }}"
-          .github/scripts/probe-m2.sh "seed / after compile"
+          .github/scripts/probe-m2.sh "seed / after compile" || true
 
   run-a:
     name: 'run-a: `mvn package` (downloads shade deps, cache NOT re-saved)'
@@ -79,7 +79,7 @@ jobs:
         shell: bash
         run: |
           echo "cache-hit=${{ steps.java.outputs.cache-hit }}"
-          .github/scripts/probe-m2.sh "run-a / before package"
+          .github/scripts/probe-m2.sh "run-a / before package" || true
       - name: 'mvn package (expect shade deps to download here)'
         working-directory: maven-plugin-cache-project
         shell: bash
@@ -90,7 +90,7 @@ jobs:
       - name: 'probe: shade plugin deps in ~/.m2 AFTER package'
         shell: bash
         run: |
-          .github/scripts/probe-m2.sh "run-a / after package"
+          .github/scripts/probe-m2.sh "run-a / after package" || true
 
   run-b:
     name: 'run-b: verdict — are shade deps still missing on cache hit?'
