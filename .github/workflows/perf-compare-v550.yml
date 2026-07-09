@@ -1,0 +1,241 @@
+name: 'Performance: setup-java v5.5.0 (CommonJS) vs main (ESM)'
+
+# Head-to-head performance comparison of setup-java between the last CommonJS
+# release (v5.5.0) and the current `main` (which is now ESM + refreshed deps and
+# cache/logging enhancements). The two versions run an IDENTICAL scenario; the
+# ONLY difference is the pinned setup-java commit:
+#   - v5.5.0 -> commit 0f481fc (package.json has NO "type", i.e. CommonJS)
+#   - main   -> commit f848fd1 (v6.0.0, "type": "module", i.e. ESM)
+# Both declare `using: node24`, so this isolates the effect of the ESM rewrite,
+# dependency bumps, and cache handling on real setup time.
+#
+# What we measure, per OS and per version:
+#   * setup_ms  - wall-clock time of the `setup-java` step (node startup +
+#                 JDK provisioning from the runner tool-cache + build-tool cache
+#                 restore). Bracketed with Date.now() from the runner's node so
+#                 it is portable across Ubuntu / Windows / macOS.
+#   * cache_hit - the action's `cache-hit` output for the Maven (~/.m2) cache.
+#   * m2_kb     - size of ~/.m2/repository after the build (cache footprint).
+#
+# Two phases make the cache behavior observable in a single run:
+#   * COLD - build-tool cache is guaranteed empty (the cache key embeds the run
+#            id), so setup-java restores nothing and SAVES the cache in post.
+#   * WARM - `needs: cold`, so the cache saved by COLD is now present and
+#            setup-java restores it (cache-hit=true). WARM vs COLD shows the
+#            restore cost/benefit; v5.5.0 vs main shows the version delta.
+#
+# Temurin 21 is used on purpose: it is pre-provisioned in the runner tool-cache
+# on all three OSes, so JDK "download" is a low-variance local copy and the
+# timing reflects the action's own overhead + caching rather than network noise.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cold:
+    name: 'COLD ${{ matrix.ref.name }} (${{ matrix.os }})'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        ref:
+          - { name: 'v5.5.0 (CommonJS)', slug: 'v550', module: 'CommonJS' }
+          - { name: 'main (ESM)', slug: 'main', module: 'ESM' }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Materialize per-run Maven project (unique, empty cache key)
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf proj && cp -r maven-sample-project proj
+          # Embed version + run id in the pom so the setup-java cache key is
+          # unique to THIS run and version -> COLD is a guaranteed miss and the
+          # matching WARM job (same content) restores exactly this cache.
+          node -e "const fs=require('fs');const p='proj/pom.xml';let s=fs.readFileSync(p,'utf8');s=s.replace('</project>','  <!-- perf ${{ matrix.ref.slug }} ${{ github.run_id }} -->\n</project>');fs.writeFileSync(p,s)"
+
+      - name: Mark setup start
+        shell: bash
+        run: echo "T0=$(node -p 'Date.now()')" >> "$GITHUB_ENV"
+
+      - name: 'setup-java v5.5.0 (CommonJS)'
+        id: setup_v550
+        if: matrix.ref.slug == 'v550'
+        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: proj/pom.xml
+
+      - name: 'setup-java main (ESM)'
+        id: setup_main
+        if: matrix.ref.slug == 'main'
+        uses: actions/setup-java@f848fd197658fa2ff5c91f2c1823db7aed8b0519 # main (ESM)
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: proj/pom.xml
+
+      - name: Measure setup time and cache-hit
+        id: measure
+        shell: bash
+        run: |
+          set -uo pipefail
+          DUR=$(( $(node -p 'Date.now()') - T0 ))
+          HIT="${{ steps.setup_v550.outputs.cache-hit }}${{ steps.setup_main.outputs.cache-hit }}"
+          echo "setup_ms=$DUR"   >> "$GITHUB_OUTPUT"
+          echo "cache_hit=$HIT"  >> "$GITHUB_OUTPUT"
+          echo "COLD ${{ matrix.ref.name }} on ${{ matrix.os }}: setup=${DUR}ms cache-hit='${HIT}'"
+
+      - name: Build (populates the Maven cache that WARM will restore)
+        shell: bash
+        run: mvn -B -ntp -f proj/pom.xml compile
+
+      - name: Collect metrics
+        shell: bash
+        run: |
+          set -uo pipefail
+          if [ -d "$HOME/.m2/repository" ]; then M2=$(du -sk "$HOME/.m2/repository" | cut -f1); else M2=0; fi
+          cat > metric.json <<EOF
+          {"os":"${{ matrix.os }}","version":"${{ matrix.ref.name }}","module":"${{ matrix.ref.module }}","phase":"cold","setup_ms":${{ steps.measure.outputs.setup_ms }},"cache_hit":"${{ steps.measure.outputs.cache_hit }}","m2_kb":$M2}
+          EOF
+          cat metric.json
+
+      - name: Upload metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: metrics-cold-${{ matrix.ref.slug }}-${{ matrix.os }}
+          path: metric.json
+
+  warm:
+    name: 'WARM ${{ matrix.ref.name }} (${{ matrix.os }})'
+    needs: cold
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        ref:
+          - { name: 'v5.5.0 (CommonJS)', slug: 'v550', module: 'CommonJS' }
+          - { name: 'main (ESM)', slug: 'main', module: 'ESM' }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Materialize per-run Maven project (same key as COLD -> cache hit)
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf proj && cp -r maven-sample-project proj
+          node -e "const fs=require('fs');const p='proj/pom.xml';let s=fs.readFileSync(p,'utf8');s=s.replace('</project>','  <!-- perf ${{ matrix.ref.slug }} ${{ github.run_id }} -->\n</project>');fs.writeFileSync(p,s)"
+
+      - name: Mark setup start
+        shell: bash
+        run: echo "T0=$(node -p 'Date.now()')" >> "$GITHUB_ENV"
+
+      - name: 'setup-java v5.5.0 (CommonJS)'
+        id: setup_v550
+        if: matrix.ref.slug == 'v550'
+        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: proj/pom.xml
+
+      - name: 'setup-java main (ESM)'
+        id: setup_main
+        if: matrix.ref.slug == 'main'
+        uses: actions/setup-java@f848fd197658fa2ff5c91f2c1823db7aed8b0519 # main (ESM)
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: proj/pom.xml
+
+      - name: Measure setup time and cache-hit
+        id: measure
+        shell: bash
+        run: |
+          set -uo pipefail
+          DUR=$(( $(node -p 'Date.now()') - T0 ))
+          HIT="${{ steps.setup_v550.outputs.cache-hit }}${{ steps.setup_main.outputs.cache-hit }}"
+          echo "setup_ms=$DUR"   >> "$GITHUB_OUTPUT"
+          echo "cache_hit=$HIT"  >> "$GITHUB_OUTPUT"
+          echo "WARM ${{ matrix.ref.name }} on ${{ matrix.os }}: setup=${DUR}ms cache-hit='${HIT}'"
+
+      - name: Collect metrics
+        shell: bash
+        run: |
+          set -uo pipefail
+          if [ -d "$HOME/.m2/repository" ]; then M2=$(du -sk "$HOME/.m2/repository" | cut -f1); else M2=0; fi
+          cat > metric.json <<EOF
+          {"os":"${{ matrix.os }}","version":"${{ matrix.ref.name }}","module":"${{ matrix.ref.module }}","phase":"warm","setup_ms":${{ steps.measure.outputs.setup_ms }},"cache_hit":"${{ steps.measure.outputs.cache_hit }}","m2_kb":$M2}
+          EOF
+          cat metric.json
+
+      - name: Upload metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: metrics-warm-${{ matrix.ref.slug }}-${{ matrix.os }}
+          path: metric.json
+
+  compare:
+    name: 'Compare (v5.5.0 vs main)'
+    needs: [cold, warm]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all metrics
+        uses: actions/download-artifact@v4
+        with:
+          path: metrics
+          pattern: metrics-*
+
+      - name: Build comparison report
+        shell: bash
+        run: |
+          set -uo pipefail
+          jq -s '.' $(find metrics -name metric.json) > all.json
+          echo "Collected $(jq 'length' all.json) data points"
+
+          {
+            echo "## setup-java performance: v5.5.0 (CommonJS) vs main (ESM)"
+            echo ""
+            echo "Identical scenario (Temurin 21 + Maven build). \`setup_ms\` is the"
+            echo "wall-clock time of the \`setup-java\` step. COLD = empty build-tool"
+            echo "cache (miss + save); WARM = cache restored (hit)."
+            echo ""
+            echo "### Raw measurements"
+            echo ""
+            echo "| OS | setup-java | module | phase | setup (ms) | cache-hit | .m2 (KB) |"
+            echo "|----|-----------|--------|-------|-----------:|-----------|---------:|"
+            jq -r 'sort_by(.os, .version, .phase)[] | "| \(.os) | \(.version) | \(.module) | \(.phase) | \(.setup_ms) | \(.cache_hit // "") | \(.m2_kb) |"' all.json
+            echo ""
+            echo "### v5.5.0 vs main (same OS + phase)"
+            echo ""
+            echo "| OS | phase | v5.5.0 (ms) | main (ms) | main − v5.5.0 (ms) |"
+            echo "|----|-------|------------:|----------:|-------------------:|"
+            jq -r '
+              group_by(.os + "|" + .phase)[]
+              | { os: .[0].os, phase: .[0].phase,
+                  v550: (map(select(.module=="CommonJS"))[0].setup_ms),
+                  main: (map(select(.module=="ESM"))[0].setup_ms) }
+              | select(.v550 != null and .main != null)
+              | "| \(.os) | \(.phase) | \(.v550) | \(.main) | \(.main - .v550) |"
+            ' all.json
+            echo ""
+            echo "> Timings include ~sub-second inter-step runner overhead and vary"
+            echo "> run-to-run; re-run a few times or read the trend across OSes."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "----- raw -----"
+          cat all.json | jq -c '.[]'
