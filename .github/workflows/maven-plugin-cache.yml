@@ -1,0 +1,126 @@
+name: Maven plugin-dependency caching (#990)
+
+# Reproduction / verification for actions/setup-java#990.
+#
+# Claim in the issue: when `cache: maven` gets a cache hit on the pom-hash key,
+# setup-java does NOT re-save the cache, so any Maven *plugin* dependencies that
+# were downloaded during the build (plexus-*, commons-compress, aircompressor,
+# xz pulled in by maven-shade-plugin) are thrown away and downloaded again on
+# every subsequent run.
+#
+# Strategy (all jobs share ONE cache key, derived only from the repro pom):
+#   1. seed   -> fresh cache, `mvn compile` (never resolves the shade plugin)
+#                => cache is SAVED but contains only compile-time artifacts.
+#   2. run-a  -> cache hit; `mvn package` downloads the shade plugin deps;
+#                cache hit means setup-java does NOT save -> deps discarded.
+#   3. run-b  -> cache hit (same, unchanged); the shade plugin deps are STILL
+#                absent from the restored cache and get downloaded AGAIN.
+#
+# If run-b finds the shade plugin deps missing from the restored ~/.m2 before it
+# builds, the issue is still valid. run-b fails in that case so the red status
+# is an unambiguous "issue #990 still reproduces" signal.
+
+on:
+  push:
+    branches: [main, 'repro/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SETUP_JAVA: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
+  PROJECT_DIR: maven-plugin-cache-project
+
+jobs:
+  seed:
+    name: 'seed cache with `mvn compile` (no shade plugin)'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: java
+        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: maven-plugin-cache-project/pom.xml
+          show-download-progress: true
+      - name: 'probe: shade plugin deps in ~/.m2 BEFORE compile'
+        shell: bash
+        run: |
+          .github/scripts/probe-m2.sh "seed / before compile"
+      - name: 'mvn compile'
+        working-directory: maven-plugin-cache-project
+        shell: bash
+        run: mvn -B -e compile 2>&1 | tee compile.log
+      - name: 'probe: shade plugin deps in ~/.m2 AFTER compile'
+        shell: bash
+        run: |
+          echo "cache-hit=${{ steps.java.outputs.cache-hit }}"
+          .github/scripts/probe-m2.sh "seed / after compile"
+
+  run-a:
+    name: 'run-a: `mvn package` (downloads shade deps, cache NOT re-saved)'
+    needs: seed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: java
+        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: maven-plugin-cache-project/pom.xml
+          show-download-progress: true
+      - name: 'probe: shade plugin deps in restored ~/.m2 BEFORE package'
+        shell: bash
+        run: |
+          echo "cache-hit=${{ steps.java.outputs.cache-hit }}"
+          .github/scripts/probe-m2.sh "run-a / before package"
+      - name: 'mvn package (expect shade deps to download here)'
+        working-directory: maven-plugin-cache-project
+        shell: bash
+        run: |
+          mvn -B -e package 2>&1 | tee package.log
+          echo '--- downloads observed in run-a ---'
+          grep -Ei 'Downloading from .*(plexus-archiver|commons-compress|aircompressor|/xz/)' package.log || echo '(none matched)'
+      - name: 'probe: shade plugin deps in ~/.m2 AFTER package'
+        shell: bash
+        run: |
+          .github/scripts/probe-m2.sh "run-a / after package"
+
+  run-b:
+    name: 'run-b: verdict — are shade deps still missing on cache hit?'
+    needs: run-a
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: java
+        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: maven-plugin-cache-project/pom.xml
+          show-download-progress: true
+      - name: 'VERDICT: shade plugin deps in restored ~/.m2 BEFORE package'
+        shell: bash
+        run: |
+          echo "cache-hit=${{ steps.java.outputs.cache-hit }}"
+          if .github/scripts/probe-m2.sh "run-b / before package (VERDICT)"; then
+            echo "::notice title=Issue #990::Shade plugin deps ARE present in the restored cache — issue NOT reproduced."
+          else
+            echo "::error title=Issue #990 still valid::maven-shade-plugin dependencies (plexus-archiver / commons-compress / aircompressor / xz) were downloaded by run-a but are STILL missing from the restored cache in run-b. On a cache hit setup-java does not re-save, so these plugin deps are re-downloaded on every run."
+            exit 1
+          fi
+      - name: 'mvn package (shows the re-download that proves the issue)'
+        if: always()
+        working-directory: maven-plugin-cache-project
+        shell: bash
+        run: |
+          mvn -B -e package 2>&1 | tee package.log
+          echo '--- downloads observed in run-b (these were already downloaded in run-a) ---'
+          grep -Ei 'Downloading from .*(plexus-archiver|commons-compress|aircompressor|/xz/)' package.log || echo '(none matched)'
