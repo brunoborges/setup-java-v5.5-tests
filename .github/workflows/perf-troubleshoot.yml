@@ -29,6 +29,7 @@ name: 'Perf troubleshoot: warm-restore breakdown (v5.5.0 vs main)'
 # and read medians in the compare summary to beat hosted-runner variance.
 
 on:
+  pull_request:
   workflow_dispatch:
 
 permissions:
