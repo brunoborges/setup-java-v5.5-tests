@@ -1,0 +1,81 @@
+name: Workaround — go-offline seed then cached build (#990)
+
+# Tests the proposed workaround for actions/setup-java#990:
+# run `mvn dependency:go-offline` in the job that FIRST populates the cache, so
+# the saved cache contains the maven-shade-plugin dependency set. Later builds
+# then get a cache hit with those plugin deps already present and download
+# nothing — even though setup-java still does not re-save on a hit.
+#
+# This project has its own artifactId (distinct pom hash) so it seeds a FRESH
+# cache key, independent of the maven-plugin-cache.yml experiment.
+#
+#   seed-goffline -> fresh cache, `mvn dependency:go-offline` -> cache SAVED
+#   build         -> cache hit; `mvn package` must download NONE of the shade
+#                    plugin deps. If it does, the workaround failed (job red).
+
+on:
+  push:
+    branches: [main, 'repro/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  seed-goffline:
+    name: 'seed cache with `mvn dependency:go-offline`'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: java
+        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: maven-goffline-project/pom.xml
+          show-download-progress: true
+      - name: 'probe: shade plugin deps BEFORE go-offline'
+        shell: bash
+        run: .github/scripts/probe-m2.sh "seed-goffline / before" || true
+      - name: 'mvn dependency:go-offline'
+        working-directory: maven-goffline-project
+        shell: bash
+        run: mvn -B -e dependency:go-offline 2>&1 | tee goffline.log
+      - name: 'probe: shade plugin deps AFTER go-offline'
+        shell: bash
+        run: |
+          echo "cache-hit=${{ steps.java.outputs.cache-hit }}"
+          .github/scripts/probe-m2.sh "seed-goffline / after" || true
+
+  build:
+    name: 'build: `mvn package` on go-offline cache must download nothing'
+    needs: seed-goffline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: java
+        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: maven-goffline-project/pom.xml
+          show-download-progress: true
+      - name: 'probe: shade plugin deps in restored cache BEFORE package'
+        shell: bash
+        run: |
+          echo "cache-hit=${{ steps.java.outputs.cache-hit }}"
+          .github/scripts/probe-m2.sh "build / before package" || true
+      - name: 'mvn package — assert NO shade-dep downloads'
+        working-directory: maven-goffline-project
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -e package 2>&1 | tee package.log
+          if grep -Ei 'Downloading from .*(plexus-archiver|commons-compress|aircompressor|/xz/)' package.log; then
+            echo "::error title=Workaround failed::mvn package still downloaded shade plugin deps despite the go-offline seed — go-offline did not fully cover the build."
+            exit 1
+          fi
+          echo "::notice title=Workaround works::mvn package downloaded none of the shade plugin deps; the go-offline-seeded cache covered them."
