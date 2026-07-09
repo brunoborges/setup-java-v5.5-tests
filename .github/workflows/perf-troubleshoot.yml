@@ -1,0 +1,208 @@
+name: 'Perf troubleshoot: warm-restore breakdown (v5.5.0 vs main)'
+
+# Diagnostic workflow to explain WHY the `setup-java` warm phase looked slower
+# under `main` (ESM v6.0.0) on Windows/macOS in the headline comparison.
+#
+# The headline `setup_ms` times the ENTIRE setup-java step, which bundles three
+# things:  Node/ESM bootstrap  ->  JDK resolve (tool-cache)  ->  Maven cache
+# restore (download + tar/zstd extract). This workflow decomposes that black box
+# so we can attribute any version delta to a specific phase:
+#
+#   T_nocache = setup-java with `cache:` OMITTED  -> bootstrap + JDK only
+#   T_warm    = setup-java with `cache: maven` and the cache pre-seeded (hit)
+#   T_restore = T_warm - T_nocache                -> the cache-restore cost
+#
+# If the ESM slowdown lives in T_nocache, it is Node/ESM startup (a fixed cost
+# most visible where the rest is fast). If it lives in T_restore, it implicates
+# the @actions/cache dependency bump in v6.0.0 (tar/zstd/download behavior).
+#
+# The `warm` jobs run with ACTIONS_STEP_DEBUG=true so the action emits timestamped
+# cache internals (resolved keys, "Cache Size", download, extract). The compare
+# job pulls the raw job logs and slices the setup-java step so download-vs-extract
+# is visible, especially on Windows (BSD tar / zstd).
+#
+# Pins (both `using: node24`, so runtime is constant):
+#   v5.5.0 -> 0f481fc (CommonJS, no package.json "type")
+#   main   -> f848fd1 (ESM, "type": "module", v6.0.0)
+#
+# Dispatch this several times (it is re-run safe: the cache key embeds the run id)
+# and read medians in the compare summary to beat hosted-runner variance.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ---- seed: populate the Maven cache that the matching warm job restores ----
+  seed:
+    name: 'SEED ${{ matrix.ref.name }} (${{ matrix.os }})'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        ref:
+          - { name: 'v5.5.0 (CommonJS)', slug: 'v550', module: 'CommonJS' }
+          - { name: 'main (ESM)', slug: 'main', module: 'ESM' }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Materialize per-run project (unique, shared with warm)
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf proj && cp -r maven-sample-project proj
+          node -e "const fs=require('fs');const p='proj/pom.xml';let s=fs.readFileSync(p,'utf8');s=s.replace('</project>','  <!-- perf ${{ matrix.ref.slug }} ${{ github.run_id }} -->\n</project>');fs.writeFileSync(p,s)"
+      - name: 'setup-java v5.5.0 (CommonJS)'
+        if: matrix.ref.slug == 'v550'
+        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
+        with: { distribution: temurin, java-version: '21', cache: maven, cache-dependency-path: proj/pom.xml }
+      - name: 'setup-java main (ESM)'
+        if: matrix.ref.slug == 'main'
+        uses: actions/setup-java@f848fd197658fa2ff5c91f2c1823db7aed8b0519 # main (ESM)
+        with: { distribution: temurin, java-version: '21', cache: maven, cache-dependency-path: proj/pom.xml }
+      - name: Build to populate ~/.m2 (saved by the cache post-step)
+        shell: bash
+        run: mvn -B -ntp -f proj/pom.xml compile
+
+  # ---- nocache: setup-java WITHOUT cache -> bootstrap + JDK only ----
+  nocache:
+    name: 'NOCACHE ${{ matrix.ref.name }} (${{ matrix.os }})'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        ref:
+          - { name: 'v5.5.0 (CommonJS)', slug: 'v550', module: 'CommonJS' }
+          - { name: 'main (ESM)', slug: 'main', module: 'ESM' }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Mark setup start
+        shell: bash
+        run: echo "T0=$(node -p 'Date.now()')" >> "$GITHUB_ENV"
+      - name: 'setup-java v5.5.0 (CommonJS) - no cache'
+        if: matrix.ref.slug == 'v550'
+        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
+        with: { distribution: temurin, java-version: '21' }
+      - name: 'setup-java main (ESM) - no cache'
+        if: matrix.ref.slug == 'main'
+        uses: actions/setup-java@f848fd197658fa2ff5c91f2c1823db7aed8b0519 # main (ESM)
+        with: { distribution: temurin, java-version: '21' }
+      - name: Record T_nocache
+        id: m
+        shell: bash
+        run: |
+          set -uo pipefail
+          DUR=$(( $(node -p 'Date.now()') - T0 ))
+          echo "nocache ${{ matrix.ref.name }} on ${{ matrix.os }}: ${DUR}ms"
+          cat > metric.json <<EOF
+          {"os":"${{ matrix.os }}","version":"${{ matrix.ref.name }}","module":"${{ matrix.ref.module }}","phase":"nocache","setup_ms":$DUR,"cache_hit":""}
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tsm-nocache-${{ matrix.ref.slug }}-${{ matrix.os }}
+          path: metric.json
+
+  # ---- warm: cache pre-seeded -> measures restore, with step-debug on ----
+  warm:
+    name: 'WARM ${{ matrix.ref.name }} (${{ matrix.os }})'
+    needs: seed
+    runs-on: ${{ matrix.os }}
+    env:
+      ACTIONS_STEP_DEBUG: 'true'
+      ACTIONS_RUNNER_DEBUG: 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        ref:
+          - { name: 'v5.5.0 (CommonJS)', slug: 'v550', module: 'CommonJS' }
+          - { name: 'main (ESM)', slug: 'main', module: 'ESM' }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Materialize per-run project (same key as SEED -> cache hit)
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf proj && cp -r maven-sample-project proj
+          node -e "const fs=require('fs');const p='proj/pom.xml';let s=fs.readFileSync(p,'utf8');s=s.replace('</project>','  <!-- perf ${{ matrix.ref.slug }} ${{ github.run_id }} -->\n</project>');fs.writeFileSync(p,s)"
+      - name: Mark setup start
+        shell: bash
+        run: echo "T0=$(node -p 'Date.now()')" >> "$GITHUB_ENV"
+      - name: 'setup-java v5.5.0 (CommonJS) - warm'
+        id: setup_v550
+        if: matrix.ref.slug == 'v550'
+        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
+        with: { distribution: temurin, java-version: '21', cache: maven, cache-dependency-path: proj/pom.xml }
+      - name: 'setup-java main (ESM) - warm'
+        id: setup_main
+        if: matrix.ref.slug == 'main'
+        uses: actions/setup-java@f848fd197658fa2ff5c91f2c1823db7aed8b0519 # main (ESM)
+        with: { distribution: temurin, java-version: '21', cache: maven, cache-dependency-path: proj/pom.xml }
+      - name: Record T_warm
+        id: m
+        shell: bash
+        run: |
+          set -uo pipefail
+          DUR=$(( $(node -p 'Date.now()') - T0 ))
+          HIT="${{ steps.setup_v550.outputs.cache-hit }}${{ steps.setup_main.outputs.cache-hit }}"
+          echo "warm ${{ matrix.ref.name }} on ${{ matrix.os }}: ${DUR}ms hit='${HIT}'"
+          cat > metric.json <<EOF
+          {"os":"${{ matrix.os }}","version":"${{ matrix.ref.name }}","module":"${{ matrix.ref.module }}","phase":"warm","setup_ms":$DUR,"cache_hit":"$HIT"}
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tsm-warm-${{ matrix.ref.slug }}-${{ matrix.os }}
+          path: metric.json
+
+  compare:
+    name: 'Breakdown (nocache vs warm vs restore)'
+    needs: [nocache, warm]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: metrics, pattern: 'tsm-*' }
+      - name: Report
+        shell: bash
+        run: |
+          set -uo pipefail
+          jq -s '.' $(find metrics -name metric.json) > all.json
+          echo "points: $(jq 'length' all.json)"
+          {
+            echo "## Warm-restore breakdown: v5.5.0 (CJS) vs main (ESM v6.0.0)"
+            echo ""
+            echo "\`T_restore = T_warm - T_nocache\`. If a version delta lives in"
+            echo "**nocache**, it is Node/ESM bootstrap + JDK; if in **restore**, it is"
+            echo "the @actions/cache path (download + tar/zstd extract)."
+            echo ""
+            echo "| OS | version | T_nocache (ms) | T_warm (ms) | T_restore (ms) |"
+            echo "|----|---------|---------------:|------------:|---------------:|"
+            jq -r '
+              group_by(.os + "|" + .version)[]
+              | { os: .[0].os, version: .[0].version,
+                  nc: (map(select(.phase=="nocache").setup_ms)|add/length|floor),
+                  wm: (map(select(.phase=="warm").setup_ms)|add/length|floor) }
+              | "| \(.os) | \(.version) | \(.nc) | \(.wm) | \(.wm - .nc) |"
+            ' all.json | sort
+            echo ""
+            echo "### main − v5.5.0 per phase"
+            echo ""
+            echo "| OS | Δ nocache | Δ restore |"
+            echo "|----|----------:|----------:|"
+            jq -r '
+              group_by(.os)[]
+              | .[0].os as $os
+              | ( [.[]|select(.version|startswith("v5.5.0"))] ) as $v
+              | ( [.[]|select(.version|startswith("main"))] ) as $m
+              | ( ($v|map(select(.phase=="nocache").setup_ms)|add/length) ) as $vnc
+              | ( ($m|map(select(.phase=="nocache").setup_ms)|add/length) ) as $mnc
+              | ( ($v|map(select(.phase=="warm").setup_ms)|add/length) ) as $vwm
+              | ( ($m|map(select(.phase=="warm").setup_ms)|add/length) ) as $mwm
+              | "| \($os) | \(($mnc-$vnc)|floor) | \((($mwm-$mnc)-($vwm-$vnc))|floor) |"
+            ' all.json | sort
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "----- raw -----"
+          jq -c '.[]' all.json
