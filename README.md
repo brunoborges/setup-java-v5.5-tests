@@ -20,10 +20,23 @@ CI test bed for changes merged into [`actions/setup-java`](https://github.com/ac
 Dependency bumps and internal CI/test-only commits from the same range are intentionally
 not covered here — they have no user-facing action behavior to exercise.
 
+## Recommended workarounds (no code change)
+
+Some requests are answered by **existing** capabilities rather than new inputs. These
+workflows document the officially recommended patterns so they keep working:
+
+| Issue | Ask | Workflow | Recommended patterns exercised |
+|-------|-----|----------|-------------------------------|
+| [#945](https://github.com/actions/setup-java/issues/945) | Install multiple JDK **distributions** (closed as *not planned*) | [`multiple-distributions.yml`](.github/workflows/multiple-distributions.yml) | 1) **matrix** of `distribution` × `java-version` (separate jobs); 2) **stacking** `setup-java` steps in one job — each appends to `toolchains.xml`, leaves `settings.xml` untouched, and the last step becomes the default `JAVA_HOME` |
+
+Because these exercise existing behavior (not a v5.4.0 → v5.5.0 change), they have **no
+`BASELINE` job** — everything is pinned to the tip of `main` (v5.5.0).
+
 ## Baseline vs current
 
 Each feature workflow (except `verify-signature`, where v5.4.0 simply ignores the unknown
-input) contains **two sets of jobs** so you can compare behavior directly in the Actions UI:
+input, and `multiple-distributions`, which only documents existing-capability workarounds)
+contains **two sets of jobs** so you can compare behavior directly in the Actions UI:
 
 - `BASELINE v5.4.0: …` — pinned to [`1bcf9fb`](https://github.com/actions/setup-java/commit/1bcf9fb12cf4aa7d266a90ae39939e61372fe520) (v5.4.0) and asserts the **previous** behavior.
 - `CURRENT: …` — pinned to [`0f481fc`](https://github.com/actions/setup-java/commit/0f481fcb613427c0f801b606911222b5b6f3083a) and asserts the **new** behavior.
