@@ -1,0 +1,199 @@
+name: Multiple JDK distributions - recommended workarounds (#945)
+
+# Issue actions/setup-java#945 ("Allow to install multiple JDK distributions")
+# was closed as *not planned*: instead of a dedicated multi-distribution input,
+# two existing patterns already cover the use cases. This workflow proves both
+# recommended workarounds actually work, so they keep working as the action evolves.
+#
+#   Workaround 1 - Test against different vendors with a build MATRIX (separate jobs):
+#     each distribution x version runs in its own isolated job.
+#
+#   Workaround 2 - Make several distributions available in a SINGLE job by STACKING
+#     setup-java steps: every extra call appends its JDK to ~/.m2/toolchains.xml
+#     without rewriting the settings.xml produced by the first call, and the LAST
+#     step installed becomes the default JAVA_HOME.
+#
+# These are existing capabilities (not a v5.4.0 -> v5.5.0 behavior change), so there
+# is no separate BASELINE job here; everything is pinned to the tip of main (v5.5.0).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Workaround 1: a matrix gives clean isolation, parallelism and per-vendor
+  # failure attribution. Each job installs exactly one distribution + version and
+  # asserts it becomes the job's default JDK.
+  matrix-distributions:
+    name: 'Workaround 1 (matrix): ${{ matrix.distribution }} ${{ matrix.java-version }} - ${{ matrix.os }}'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        distribution: [temurin, zulu]
+        java-version: ['17', '21']
+    steps:
+      - name: Set up ${{ matrix.distribution }} ${{ matrix.java-version }}
+        id: setup-java
+        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
+        with:
+          distribution: ${{ matrix.distribution }}
+          java-version: ${{ matrix.java-version }}
+
+      - name: Assert this JDK is the job default
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED='${{ matrix.java-version }}'
+          echo "JAVA_HOME=${JAVA_HOME:-}"
+          echo "outputs.path=${{ steps.setup-java.outputs.path }}"
+          echo "outputs.version=${{ steps.setup-java.outputs.version }}"
+
+          # JAVA_HOME must point at the JDK this job installed.
+          if [ "${JAVA_HOME:-}" != '${{ steps.setup-java.outputs.path }}' ]; then
+            echo "::error::JAVA_HOME does not match the installed JDK"
+            exit 1
+          fi
+
+          # The default `java` on PATH must be the requested major version.
+          java -version 2>&1 | grep -E "\"${EXPECTED}[\.\"]|version \"${EXPECTED}" >/dev/null \
+            || { echo "::error::default java is not ${EXPECTED}"; exit 1; }
+
+          # The action's own version output must agree too.
+          VER='${{ steps.setup-java.outputs.version }}'
+          case "$VER" in
+            "$EXPECTED"|"$EXPECTED".*) ;;
+            *) echo "::error::outputs.version ($VER) is not ${EXPECTED}"; exit 1 ;;
+          esac
+          echo "OK: ${{ matrix.distribution }} ${EXPECTED} is the job default"
+
+  # Workaround 2: stack setup-java steps in one job. This matches the "some tests
+  # need a specific distro, others run on any JDK" scenario - Maven/Gradle pick the
+  # right JDK via <toolchains>, while "any JDK" tests just use the default JAVA_HOME.
+  stacked-distributions:
+    name: 'Workaround 2 (stacked steps): temurin 21 + zulu 17 - ${{ matrix.os }}'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      # First distribution: writes both settings.xml and toolchains.xml and, being
+      # the only JDK so far, is the current default JAVA_HOME.
+      - name: Set up temurin 21 (first step -> writes settings.xml)
+        id: first
+        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          mvn-toolchain-id: temurin-21
+
+      - name: Record settings.xml written by the first step
+        shell: bash
+        run: |
+          set -euo pipefail
+          SETTINGS="$HOME/.m2/settings.xml"
+          test -f "$SETTINGS" || { echo "::error::first step did not create settings.xml"; exit 1; }
+          echo "settings.xml after first step:"
+          cat "$SETTINGS"
+          # Snapshot the exact bytes so we can prove the next step leaves it untouched.
+          HASH=$(shasum -a 256 "$SETTINGS" | awk '{print $1}')
+          echo "SETTINGS_HASH_BEFORE=$HASH" >> "$GITHUB_ENV"
+          echo "settings.xml sha256 (before second step): $HASH"
+
+          # Sanity: temurin 21 is the default right now.
+          if [ "${JAVA_HOME:-}" != '${{ steps.first.outputs.path }}' ]; then
+            echo "::error::temurin 21 should be the default after the first step"
+            exit 1
+          fi
+          echo "OK: temurin 21 is the default after the first step"
+
+      # Second distribution: must APPEND to toolchains.xml and NOT touch settings.xml.
+      # Because set-default stays true (the recommended pattern), it also becomes the
+      # new default JAVA_HOME - the last step installed wins.
+      - name: Set up zulu 17 (extra distro -> appended to toolchains.xml)
+        id: second
+        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
+        with:
+          distribution: zulu
+          java-version: '17'
+          mvn-toolchain-id: zulu-17
+
+      - name: Assert both JDKs are available and the last one is the default
+        shell: bash
+        run: |
+          set -euo pipefail
+          SETTINGS="$HOME/.m2/settings.xml"
+          TC="$HOME/.m2/toolchains.xml"
+
+          echo "== toolchains.xml =="
+          test -f "$TC" || { echo "::error::toolchains.xml not found"; exit 1; }
+          cat "$TC"
+          echo "== settings.xml =="
+          cat "$SETTINGS"
+          echo "----"
+
+          count_tag() { grep -o "$1" "$TC" | wc -l | tr -d '[:space:]'; }
+
+          # 1) Exactly one <toolchains> root, containing exactly the two stacked JDKs.
+          ROOT=$(count_tag "<toolchains")
+          ENTRIES=$(count_tag "<toolchain>")
+          echo "root <toolchains>: $ROOT ; <toolchain> entries: $ENTRIES"
+          if [ "$ROOT" -ne 1 ]; then
+            echo "::error::expected exactly 1 <toolchains> root, got $ROOT"
+            exit 1
+          fi
+          if [ "$ENTRIES" -ne 2 ]; then
+            echo "::error::expected 2 <toolchain> entries (temurin-21 + zulu-17), got $ENTRIES"
+            exit 1
+          fi
+          for id in temurin-21 zulu-17; do
+            n=$(grep -o "<id>$id</id>" "$TC" | wc -l | tr -d '[:space:]')
+            if [ "$n" -ne 1 ]; then
+              echo "::error::toolchain id $id appears $n times, expected exactly 1"
+              exit 1
+            fi
+          done
+          echo "OK: both distributions are registered in toolchains.xml"
+
+          # 2) settings.xml must be byte-for-byte unchanged by the second step.
+          HASH_AFTER=$(shasum -a 256 "$SETTINGS" | awk '{print $1}')
+          echo "settings.xml sha256 (after second step): $HASH_AFTER"
+          if [ "$HASH_AFTER" != "${SETTINGS_HASH_BEFORE:-}" ]; then
+            echo "::error::second setup-java step modified settings.xml (before=${SETTINGS_HASH_BEFORE:-} after=$HASH_AFTER)"
+            exit 1
+          fi
+          echo "OK: settings.xml was not touched by the second step"
+
+          # 3) The last step installed (zulu 17) is now the default JAVA_HOME.
+          echo "JAVA_HOME=${JAVA_HOME:-}"
+          echo "first.path=${{ steps.first.outputs.path }}"
+          echo "second.path=${{ steps.second.outputs.path }}"
+          if [ "${JAVA_HOME:-}" != '${{ steps.second.outputs.path }}' ]; then
+            echo "::error::JAVA_HOME should point at the last installed JDK (zulu 17)"
+            exit 1
+          fi
+          java -version 2>&1 | grep -E '"17[\.\"]|version "17' >/dev/null \
+            || { echo "::error::default java is not 17 (zulu)"; exit 1; }
+          echo "OK: last-installed JDK (zulu 17) is the default JAVA_HOME"
+
+          # 4) The non-default distribution is still usable directly via its outputs.path.
+          FIRST='${{ steps.first.outputs.path }}'
+          test -x "$FIRST/bin/java" || { echo "::error::temurin 21 not found at first.path"; exit 1; }
+          "$FIRST/bin/java" -version 2>&1 | grep -E '"21[\.\"]|version "21' >/dev/null \
+            || { echo "::error::first.path JDK is not Java 21"; exit 1; }
+          echo "OK: temurin 21 remains available via its outputs.path / toolchains"
+
+          # 5) Well-formedness check when xmllint is available.
+          if command -v xmllint >/dev/null 2>&1; then
+            xmllint --noout "$TC"
+            xmllint --noout "$SETTINGS"
+            echo "xmllint: toolchains.xml and settings.xml are well-formed"
+          fi
+          echo "OK: stacking setup-java steps makes multiple distributions available"
