@@ -102,8 +102,20 @@ jobs:
           test -f "$SETTINGS" || { echo "::error::first step did not create settings.xml"; exit 1; }
           echo "settings.xml after first step:"
           cat "$SETTINGS"
+          sha256_file() {
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$1" | awk '{print $1}'
+            elif command -v shasum >/dev/null 2>&1; then
+              shasum -a 256 "$1" | awk '{print $1}'
+            elif command -v openssl >/dev/null 2>&1; then
+              openssl dgst -sha256 "$1" | awk '{print $NF}'
+            else
+              echo "::error::no SHA-256 command found (tried sha256sum, shasum, openssl)" >&2
+              return 1
+            fi
+          }
           # Snapshot the exact bytes so we can prove the next step leaves it untouched.
-          HASH=$(shasum -a 256 "$SETTINGS" | awk '{print $1}')
+          HASH=$(sha256_file "$SETTINGS")
           echo "SETTINGS_HASH_BEFORE=$HASH" >> "$GITHUB_ENV"
           echo "settings.xml sha256 (before second step): $HASH"
 
@@ -140,6 +152,18 @@ jobs:
           echo "----"
 
           count_tag() { grep -o "$1" "$TC" | wc -l | tr -d '[:space:]'; }
+          sha256_file() {
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$1" | awk '{print $1}'
+            elif command -v shasum >/dev/null 2>&1; then
+              shasum -a 256 "$1" | awk '{print $1}'
+            elif command -v openssl >/dev/null 2>&1; then
+              openssl dgst -sha256 "$1" | awk '{print $NF}'
+            else
+              echo "::error::no SHA-256 command found (tried sha256sum, shasum, openssl)" >&2
+              return 1
+            fi
+          }
 
           # 1) Exactly one <toolchains> root, containing exactly the two stacked JDKs.
           ROOT=$(count_tag "<toolchains")
@@ -163,7 +187,7 @@ jobs:
           echo "OK: both distributions are registered in toolchains.xml"
 
           # 2) settings.xml must be byte-for-byte unchanged by the second step.
-          HASH_AFTER=$(shasum -a 256 "$SETTINGS" | awk '{print $1}')
+          HASH_AFTER=$(sha256_file "$SETTINGS")
           echo "settings.xml sha256 (after second step): $HASH_AFTER"
           if [ "$HASH_AFTER" != "${SETTINGS_HASH_BEFORE:-}" ]; then
             echo "::error::second setup-java step modified settings.xml (before=${SETTINGS_HASH_BEFORE:-} after=$HASH_AFTER)"
