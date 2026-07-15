@@ -1,0 +1,246 @@
+name: 'Wrapper cache separation (setup-java PR #1097)'
+
+# Tests actions/setup-java PR #1097:
+#   "Cache Maven and Gradle wrapper distributions separately from the
+#    dependency cache"
+#   https://github.com/actions/setup-java/pull/1097  (fixes #1095)
+#
+# Background
+# ---------
+# Before the PR, each build tool's wrapper distribution lived in the SAME cache
+# entry as its dependency cache, keyed on volatile files (**/pom.xml, **/*.gradle*).
+# Those keys rotate on almost every dependency change and there are no
+# restoreKeys (by design, see #269), so a full cache MISS restores nothing -
+# including the rarely-changing wrapper distribution. ./mvnw / ./gradlew then
+# re-download the build tool, which intermittently fails on upstream rate limits.
+#
+# The PR gives each wrapper distribution its OWN cache entry keyed ONLY on its
+# wrapper properties file:
+#   - maven-wrapper  -> ~/.m2/wrapper/dists    keyed on **/.mvn/wrapper/maven-wrapper.properties
+#   - gradle-wrapper -> ~/.gradle/wrapper      keyed on **/gradle-wrapper.properties
+#
+# How this workflow proves the fix (deterministically, in one run)
+# ----------------------------------------------------------------
+# For each build tool a "prime" job populates the caches, then a "verify" job
+# runs on a fresh runner and *rotates the main dependency cache key* by editing a
+# dependency file (pom.xml / build.gradle). Result:
+#   - main dependency cache  -> MISS  (key changed)          => cache-hit == false
+#   - wrapper distribution   -> HIT   (wrapper props unchanged)
+# The verify job asserts the wrapper distribution is present on disk BEFORE it
+# builds anything, i.e. it was restored from the independent wrapper cache even
+# though the dependency cache missed. That is exactly the #1095 scenario the PR
+# fixes. A final job also lists the repo's Actions caches and asserts that
+# distinct `*-maven-wrapper-*` / `*-gradle-wrapper-*` entries were created.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Pinned to the PR head commit (actions/setup-java#1097).
+env:
+  SETUP_JAVA_REF: 6cd4d8602abcb93d479ac1a322ebf80166d853e6 # PR #1097
+  MAVEN_WRAPPER_DIST: apache-maven-3.9.14
+
+permissions:
+  contents: read
+  actions: read
+
+# Serialize so the prime job always finishes (and saves caches) before verify.
+concurrency:
+  group: wrapper-cache-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # MAVEN
+  # ---------------------------------------------------------------------------
+  maven-prime:
+    name: 'Maven: prime wrapper + dependency caches'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Java with Maven caching (PR #1097)
+        id: setup
+        uses: actions/setup-java@6cd4d8602abcb93d479ac1a322ebf80166d853e6 # PR #1097
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Build with the Maven wrapper (downloads the wrapper distribution)
+        working-directory: maven-wrapper-project
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x mvnw
+          ./mvnw -B -ntp compile
+          test -d "$HOME/.m2/wrapper/dists/$MAVEN_WRAPPER_DIST" \
+            || { echo "::error::wrapper dist was not downloaded"; exit 1; }
+          echo "Primed maven-wrapper cache from $HOME/.m2/wrapper/dists/$MAVEN_WRAPPER_DIST"
+
+  maven-verify:
+    name: 'Maven: wrapper survives a dependency-cache miss'
+    needs: maven-prime
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rotate the MAIN dependency cache key (edit pom.xml)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Change a **/pom.xml (main maven key) WITHOUT touching the wrapper
+          # properties (maven-wrapper key). Mirrors a normal dependency change.
+          printf '\n<!-- rotate cache key: %s -->\n' "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            >> maven-wrapper-project/pom.xml
+          echo "pom.xml rotated; wrapper properties left untouched:"
+          sha1sum maven-wrapper-project/pom.xml \
+                  maven-wrapper-project/.mvn/wrapper/maven-wrapper.properties
+      - name: Set up Java with Maven caching (PR #1097)
+        id: setup
+        uses: actions/setup-java@6cd4d8602abcb93d479ac1a322ebf80166d853e6 # PR #1097
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Assert dependency cache MISSED but wrapper dist was RESTORED
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "main dependency cache-hit = '${{ steps.setup.outputs.cache-hit }}'"
+          if [ "${{ steps.setup.outputs.cache-hit }}" = "true" ]; then
+            echo "::error::expected the MAIN maven cache to miss after rotating pom.xml"
+            exit 1
+          fi
+          # The wrapper distribution must already be on disk - restored from the
+          # independent maven-wrapper cache - even though the dependency cache missed.
+          if [ -d "$HOME/.m2/wrapper/dists/$MAVEN_WRAPPER_DIST" ]; then
+            echo "OK: maven wrapper distribution restored from its own cache despite a dependency-cache miss (fixes #1095)."
+          else
+            echo "::error::maven wrapper distribution was NOT restored - the wrapper shares the (missed) dependency cache. PR fix not effective."
+            exit 1
+          fi
+      - name: Wrapper build still works (wrapper was not re-downloaded)
+        working-directory: maven-wrapper-project
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x mvnw
+          # The wrapper distribution is already present (asserted above), so this
+          # build reuses it. Dependencies may still download (main cache missed).
+          ./mvnw -B -ntp compile
+
+  # ---------------------------------------------------------------------------
+  # GRADLE
+  # ---------------------------------------------------------------------------
+  gradle-prime:
+    name: 'Gradle: prime wrapper + dependency caches'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Java with Gradle caching (PR #1097)
+        uses: actions/setup-java@6cd4d8602abcb93d479ac1a322ebf80166d853e6 # PR #1097
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+      - name: Build with the Gradle wrapper (downloads the wrapper distribution)
+        working-directory: javac-matcher-gradle
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon --console=plain help
+          ls -d "$HOME"/.gradle/wrapper/dists/gradle-* >/dev/null 2>&1 \
+            || { echo "::error::gradle wrapper dist was not downloaded"; exit 1; }
+          echo "Primed gradle-wrapper cache:"
+          ls "$HOME"/.gradle/wrapper/dists/
+
+  gradle-verify:
+    name: 'Gradle: wrapper survives a dependency-cache miss'
+    needs: gradle-prime
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rotate the MAIN dependency cache key (edit build.gradle)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Change a **/*.gradle* (main gradle key) WITHOUT touching
+          # gradle-wrapper.properties (gradle-wrapper key).
+          printf '\n// rotate cache key: %s\n' "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            >> javac-matcher-gradle/build.gradle
+          echo "build.gradle rotated; wrapper properties left untouched:"
+          sha1sum javac-matcher-gradle/build.gradle \
+                  javac-matcher-gradle/gradle/wrapper/gradle-wrapper.properties
+      - name: Set up Java with Gradle caching (PR #1097)
+        id: setup
+        uses: actions/setup-java@6cd4d8602abcb93d479ac1a322ebf80166d853e6 # PR #1097
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+      - name: Assert dependency cache MISSED but wrapper dist was RESTORED
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "main dependency cache-hit = '${{ steps.setup.outputs.cache-hit }}'"
+          if [ "${{ steps.setup.outputs.cache-hit }}" = "true" ]; then
+            echo "::error::expected the MAIN gradle cache to miss after rotating build.gradle"
+            exit 1
+          fi
+          if ls -d "$HOME"/.gradle/wrapper/dists/gradle-* >/dev/null 2>&1; then
+            echo "OK: gradle wrapper distribution restored from its own cache despite a dependency-cache miss (fixes #269/#1095 class of bug)."
+            ls "$HOME"/.gradle/wrapper/dists/
+          else
+            echo "::error::gradle wrapper distribution was NOT restored - the wrapper shares the (missed) dependency cache. PR fix not effective."
+            exit 1
+          fi
+      - name: Wrapper build still works (no re-download needed)
+        working-directory: javac-matcher-gradle
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon --console=plain --offline help
+
+  # ---------------------------------------------------------------------------
+  # Independent verification: distinct wrapper cache entries were created.
+  # ---------------------------------------------------------------------------
+  verify-cache-entries:
+    name: 'Verify distinct wrapper cache entries exist'
+    needs: [maven-verify, gradle-verify]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - name: List setup-java caches and assert wrapper entries are separate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "### Actions caches created for this repo" >> "$GITHUB_STEP_SUMMARY"
+          keys=$(gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/actions/caches?per_page=100" \
+            --jq '.actions_caches[].key' | sort -u)
+          echo "$keys" | sed 's/^/- `/; s/$/`/' >> "$GITHUB_STEP_SUMMARY" || true
+          echo "----- all setup-java cache keys -----"
+          echo "$keys" | grep '^setup-java-' || true
+
+          check() {
+            if echo "$keys" | grep -q -- "-$1-"; then
+              echo "OK: found a '$1' cache entry"
+            else
+              echo "::error::no '$1' cache entry found (expected a separate wrapper cache)"
+              return 1
+            fi
+          }
+          rc=0
+          check maven-wrapper  || rc=1
+          check gradle-wrapper || rc=1
+          # The main dependency caches must ALSO exist and be distinct from the
+          # wrapper caches (separation, not replacement).
+          echo "$keys" | grep -Eq 'setup-java-[^ ]*-maven-[0-9a-f]'  && echo "OK: separate main 'maven' dependency cache exists"  || echo "::warning::no main maven dependency cache key observed"
+          echo "$keys" | grep -Eq 'setup-java-[^ ]*-gradle-[0-9a-f]' && echo "OK: separate main 'gradle' dependency cache exists" || echo "::warning::no main gradle dependency cache key observed"
+          exit $rc
